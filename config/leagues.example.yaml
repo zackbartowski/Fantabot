@@ -1,0 +1,34 @@
+# Copia questo file in config/leagues.yaml e personalizzalo.
+#
+# Ogni lega e' configurabile indipendentemente: URL, squadra da seguire,
+# destinatari WhatsApp, intervallo di polling e offset dei promemoria
+# formazione. Aggiungere una nuova lega significa aggiungere una nuova
+# voce a questo elenco.
+
+leagues:
+  - id: mantra-cormolittoriano
+    name: "Mantra Cormolittoriano"
+    url: "https://leghe.fantacalcio.it/mantra-cormolittoriano/"
+    season: "2024-25"
+    # Nome ESATTO della tua squadra cosi' come appare in classifica.
+    team_name: "Nome Squadra"
+    # Nome della variabile d'ambiente (definita in .env) che contiene il
+    # cookie di sessione per questa lega. Vedi README > Autenticazione.
+    session_cookie_env: FANTACALCIO_SESSION_COOKIE_MANTRA_CORMOLITTORIANO
+    recipients:
+      - "393331234567"
+      - "393401234567"
+    poll_interval_seconds: 300
+    reminder_offsets_hours: [24, 1]
+
+  # Esempio di seconda lega con configurazione indipendente:
+  # - id: altra-lega
+  #   name: "Altra Lega"
+  #   url: "https://leghe.fantacalcio.it/altra-lega/"
+  #   season: "2024-25"
+  #   team_name: "Altra Squadra"
+  #   session_cookie_env: FANTACALCIO_SESSION_COOKIE_ALTRA_LEGA
+  #   recipients:
+  #     - "393331234567"
+  #   poll_interval_seconds: 600
+  #   reminder_offsets_hours: [24, 1]
