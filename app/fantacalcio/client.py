@@ -1,23 +1,15 @@
-"""Client HTTP per Leghe Fantacalcio.
+"""Client per l'API di Leghe Fantacalcio (apileague.fantacalcio.it).
 
-Isola completamente il resto dell'app dai dettagli di trasporto
-(HTTP, cookie, retry) e di formato (HTML) del sito. Nessun altro modulo
-deve importare `requests` o conoscere gli URL delle pagine.
+Isola completamente il resto dell'app dai dettagli di trasporto e dal
+formato JSON dell'API. Nessun altro modulo deve importare `requests` o
+conoscere gli endpoint.
 
-Autenticazione
----------------
-Leghe Fantacalcio richiede un login. Per evitare di automatizzare il
-login (fragile, rischio CAPTCHA/blocchi, e comunque non verificabile in
-questo ambiente perche' privo di accesso di rete al sito), il bot NON fa
-login autonomamente: riusa un cookie di sessione che l'utente ottiene
-autenticandosi normalmente nel proprio browser.
-
-Vedi README, sezione "Autenticazione", per come estrarre il cookie.
+Vedi app/fantacalcio/parser.py per la provenienza (verificata via HAR) di
+ogni campo usato qui.
 """
 from __future__ import annotations
 
 import logging
-from urllib.parse import urljoin
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -28,23 +20,17 @@ from app.fantacalcio.models import LeagueConfig, MatchResult, MatchdayStatus, Te
 
 logger = logging.getLogger(__name__)
 
-USER_AGENT = "FantacalcioWhatsAppBot/1.0 (+https://github.com/; contatto: configurabile)"
-
+API_BASE_URL = "https://apileague.fantacalcio.it"
+USER_AGENT = "FantacalcioWhatsAppBot/1.0"
 DEFAULT_TIMEOUT_SECONDS = 15
-
-# Percorsi relativi delle pagine usate. NON VERIFICATI (vedi parser.py):
-# ipotesi basata su pattern comuni di Leghe Fantacalcio, da correggere
-# con l'osservazione del sito reale.
-PATH_CLASSIFICA = "classifica"
-PATH_RISULTATI = "risultati"
 
 
 class FantacalcioClientError(Exception):
-    """Errore recuperabile nel comunicare con Leghe Fantacalcio."""
+    """Errore recuperabile nel comunicare con l'API di Leghe Fantacalcio."""
 
 
 class FantacalcioAuthError(FantacalcioClientError):
-    """Il cookie di sessione sembra mancante, scaduto o non valido."""
+    """L'api_key sembra mancante, scaduta o non valida."""
 
 
 def _build_session(league: LeagueConfig) -> requests.Session:
@@ -52,11 +38,12 @@ def _build_session(league: LeagueConfig) -> requests.Session:
     session.headers.update(
         {
             "User-Agent": USER_AGENT,
-            "Accept": "text/html,application/xhtml+xml",
-            "Accept-Language": "it-IT,it;q=0.9",
+            "Accept": "application/json, text/plain, */*",
+            "app_key": league.api_key,
+            "Origin": "https://leghe.fantacalcio.it",
+            "Referer": "https://leghe.fantacalcio.it/",
         }
     )
-    session.cookies.update(_parse_cookie_string(league.session_cookie))
 
     retry = Retry(
         total=3,
@@ -71,29 +58,7 @@ def _build_session(league: LeagueConfig) -> requests.Session:
     return session
 
 
-def _parse_cookie_string(raw: str) -> dict[str, str]:
-    """Converte 'NOME=valore; ALTRO=valore2' (formato copiato da DevTools)
-    in un dict di cookie. Accetta anche un singolo valore senza nome,
-    che viene mappato sul cookie generico PHPSESSID.
-    """
-    raw = (raw or "").strip()
-    if not raw:
-        return {}
-    if "=" not in raw:
-        return {"PHPSESSID": raw}
-    cookies: dict[str, str] = {}
-    for part in raw.split(";"):
-        part = part.strip()
-        if not part or "=" not in part:
-            continue
-        name, _, value = part.partition("=")
-        cookies[name.strip()] = value.strip()
-    return cookies
-
-
 class FantacalcioClient:
-    """Recupera lo stato normalizzato di una lega da Leghe Fantacalcio."""
-
     def __init__(self, league: LeagueConfig, timeout: int = DEFAULT_TIMEOUT_SECONDS):
         self.league = league
         self.timeout = timeout
@@ -108,8 +73,8 @@ class FantacalcioClient:
     def __exit__(self, *exc_info) -> None:
         self.close()
 
-    def _get(self, relative_path: str) -> str:
-        url = urljoin(self.league.url.rstrip("/") + "/", relative_path)
+    def _get(self, path: str) -> dict:
+        url = f"{API_BASE_URL}{path}"
         try:
             response = self._session.get(url, timeout=self.timeout)
         except requests.Timeout as exc:
@@ -120,31 +85,51 @@ class FantacalcioClient:
         if response.status_code in (401, 403):
             raise FantacalcioAuthError(
                 f"Accesso negato ({response.status_code}) su {url}: "
-                "il cookie di sessione potrebbe essere scaduto o non valido."
+                "l'api_key potrebbe essere scaduta o non valida."
             )
         if response.status_code >= 400:
             raise FantacalcioClientError(
                 f"Risposta HTTP inattesa {response.status_code} da {url}"
             )
-        return response.text
+        try:
+            return response.json()
+        except ValueError as exc:
+            raise FantacalcioClientError(f"Risposta non-JSON da {url}") from exc
 
     def get_matchday_status(self) -> MatchdayStatus:
-        html = self._get(PATH_CLASSIFICA)
-        return parser.parse_matchday_status(html, self.league.id)
+        status_json = self._get("/onboarding/v1/league/status")
+        lineup_json = self._get(
+            f"/gaming/v1/teamLineup/visualizza/{self.league.division}/{self.league.competition_id}"
+        )
+        return parser.parse_matchday_status(self.league.id, status_json, lineup_json)
+
+    def get_team_id(self, team_name: str) -> int | None:
+        teams_json = self._get(
+            f"/onboarding/v1/league/teams?page=1&division={self.league.division}"
+        )
+        return parser.parse_team_id(teams_json, team_name)
 
     def get_results(self, matchday: int) -> list[MatchResult]:
-        html = self._get(f"{PATH_RISULTATI}?giornata={matchday}")
-        return parser.parse_results(html)
+        # Richiede la lista degli accoppiamenti (calendario) per sapere
+        # contro chi ha giocato ogni squadra nella giornata `matchday`.
+        # Endpoint non ancora verificato: vedi TODO in parser.py.
+        logger.warning(
+            "get_results non ancora implementato: manca la verifica "
+            "dell'endpoint calendario. Nessun risultato restituito."
+        )
+        return []
 
     def get_team_status(self, matchday: int, team_name: str) -> TeamStatus:
-        html_standings = self._get(PATH_CLASSIFICA)
-        try:
-            html_results = self._get(f"{PATH_RISULTATI}?giornata={matchday}")
-        except FantacalcioClientError:
-            logger.warning(
-                "Impossibile recuperare i risultati della giornata %s per lo "
-                "stato squadra; procedo solo con la classifica.",
-                matchday,
-            )
-            html_results = None
-        return parser.parse_team_status(html_standings, html_results, team_name)
+        # Come get_results: senza il calendario non conosciamo l'ID
+        # dell'avversario, necessario per chiamare l'endpoint di dettaglio
+        # partita (/gaming/v1/teamLineup/{compId}/{round}/{serieAMday}/{a}/{b}).
+        # Ritorniamo comunque un TeamStatus minimale (solo nome) cosi' il
+        # resto del bot continua a funzionare; il messaggio WhatsApp
+        # ometterà punteggio/classifica finche' non implementato.
+        logger.warning(
+            "get_team_status non ancora completo: manca la verifica "
+            "dell'endpoint calendario/classifica. Nessun punteggio incluso "
+            "nella notifica per la giornata %s.",
+            matchday,
+        )
+        return TeamStatus(team_name=team_name)

@@ -1,261 +1,184 @@
-"""Parsing dell'HTML di Leghe Fantacalcio verso i modelli normalizzati.
+"""Parsing delle risposte JSON dell'API di Leghe Fantacalcio verso i
+modelli normalizzati.
 
 ============================================================================
-ATTENZIONE - SELETTORI NON VERIFICATI
+VERIFICATO CONTRO CHIAMATE REALI (HAR)
 ============================================================================
-Questo ambiente di sviluppo non ha accesso di rete a leghe.fantacalcio.it
-(bloccato dal proxy di rete) e la lega richiede comunque un login, quindi
-non e' stato possibile ispezionare l'HTML/le richieste reali della lega
-durante lo sviluppo iniziale.
+A differenza di una prima versione basata su scraping HTML (poi scartata),
+questi endpoint e questi campi sono stati osservati direttamente in due
+export HAR di richieste reali fatte dal browser dell'utente verso
+https://apileague.fantacalcio.it, con risposte 200 e corpo JSON completo:
 
-I selettori CSS qui sotto sono un'ipotesi ragionevole basata sulla
-struttura tipica delle pagine "Classifica" e "Risultati" di Leghe
-Fantacalcio, MA VANNO VERIFICATI con l'HTML reale prima di andare in
-produzione.
+- GET /onboarding/v1/league/status
+  -> {"sto": bool, "activ": bool, "sId": int, "mday": int, "mstr": "ISO"}
+  "mday" = numero di giornata di Serie A della PROSSIMA giornata della
+  lega da giocare/calcolare; "mstr" = data/ora di inizio (= deadline
+  formazioni) di quella giornata.
 
-Per validarli/correggerli:
-  1. Configura FANTACALCIO_SESSION_COOKIE_<LEGA> con un cookie di sessione
-     valido (vedi README, sezione "Autenticazione").
-  2. Esegui `python scripts/dump_pages.py <league_id>` da una macchina che
-     ha accesso a leghe.fantacalcio.it: salva le pagine HTML reali in
-     tests/fixtures/.
-  3. Aggiorna le costanti *_SELECTOR sotto finche' i test in
-     tests/test_parser.py (eseguiti sulle fixture reali) non passano.
+- GET /gaming/v1/teamLineup/visualizza/{division}/{competitionId}
+  -> {"teamLineupDto": {"mday": int, "cmday": int, "tid": int, ...}}
+  "mday" qui e' il numero di GIORNATA INTERNA DELLA LEGA (1, 2, 3, ...)
+  corrispondente a "cmday" = numero di giornata di Serie A. Usato per
+  mappare giornata-lega <-> giornata-Serie A (l'offset e' costante per
+  competizione, es. giornata lega 2 = giornata Serie A 5).
 
-Il resto dell'applicazione non dipende da questi dettagli: consuma solo
-i modelli normalizzati restituiti dalle funzioni pubbliche qui sotto.
+- GET /onboarding/v1/league/teams?page=1&division={division}
+  -> {"data": [{"id": int, "n": "nome squadra", "nu": "username", ...}]}
+  Usato per risalire all'ID squadra a partire dal nome configurato
+  (FANTACALCIO_TEAM_NAME).
+
+- GET /gaming/v1/teamLineup/{competitionId}/{round}/{serieAMday}/{teamA}/{teamB}
+  -> {"cal": bool, "mday": round, "cmday": serieAMday,
+      "home": {"tid": int, "tot": float, "points": int, ...},
+      "away": {"tid": int, "tot": float, "points": int, ...}}
+  "cal" e' il campo booleano ESPLICITO "giornata calcolata" fornito
+  dall'API (non serve dedurlo dal testo). "tot" e' il punteggio fantasy
+  della squadra in quella giornata.
+
+============================================================================
+DA COMPLETARE
+============================================================================
+Non e' stato ancora possibile osservare una risposta 200 (non da cache,
+vedi README) per:
+  - GET /onboarding/v1/league/competition/calendar/{competitionId}
+    (calendario/accoppiamenti per ogni giornata: necessario per sapere
+    CHI ha affrontato la squadra configurata in una data giornata, dato
+    che l'endpoint del risultato richiede l'ID di ENTRAMBE le squadre)
+  - GET /onboarding/v1/league/competition/teams?...&competitionId=...
+    (classifica: posizione e punti in classifica)
+
+Finche' questi due endpoint non sono verificati, `get_results` e
+`get_team_status` restituiscono solo i dati che si possono ottenere senza
+di essi (per `get_team_status`: nessuno, se non si conosce l'avversario).
+Il resto del bot (rilevazione giornata calcolata + promemoria deadline
+formazione, l'obiettivo primario della v1) funziona gia' con dati reali.
 ============================================================================
 """
 from __future__ import annotations
 
 import logging
-import re
 from datetime import datetime
-
-from bs4 import BeautifulSoup
 
 from app.fantacalcio.models import MatchResult, MatchdayStatus, TeamStatus
 
 logger = logging.getLogger(__name__)
 
-# --- Selettori CSS (DA VERIFICARE con HTML reale, vedi header sopra) ------
 
-# Pagina "classifica"/dashboard: elemento che riporta l'ultima giornata
-# calcolata, es. <div class="last-matchday" data-matchday="4" data-calculated-at="2024-10-01T20:15:00">
-MATCHDAY_STATUS_SELECTOR = "[data-matchday]"
-MATCHDAY_ATTR = "data-matchday"
-CALCULATED_AT_ATTR = "data-calculated-at"
-CALCULATED_FLAG_ATTR = "data-calculated"
-
-# Fallback testuale se non esiste un dato strutturato: testo tipo
-# "Giornata 4 calcolata" vs "Giornata 5 in corso" / "non ancora calcolata"
-MATCHDAY_TEXT_PATTERN = re.compile(
-    r"giornata\s*(\d+)", re.IGNORECASE
-)
-CALCULATED_TEXT_PATTERN = re.compile(
-    r"\bcalcolat[ao]\b", re.IGNORECASE
-)
-NOT_CALCULATED_TEXT_PATTERN = re.compile(
-    r"non\s+ancora\s+calcolat[ao]|in\s+corso|da\s+calcolare", re.IGNORECASE
-)
-
-# Prossima deadline formazioni: <div class="deadline" data-deadline="2024-10-05T18:30:00">
-DEADLINE_SELECTOR = "[data-deadline]"
-DEADLINE_ATTR = "data-deadline"
-
-# Righe risultati partite: <tr class="match-row"><td class="home-team">...
-MATCH_ROW_SELECTOR = "tr.match-row, tr[data-match]"
-HOME_TEAM_SELECTOR = ".home-team, .team-home"
-AWAY_TEAM_SELECTOR = ".away-team, .team-away"
-HOME_SCORE_SELECTOR = ".home-score, .score-home"
-AWAY_SCORE_SELECTOR = ".away-score, .score-away"
-
-# Righe classifica: <tr class="standings-row" data-team="Nome"><td class="position">1</td>...
-STANDINGS_ROW_SELECTOR = "tr.standings-row, tr[data-team]"
-POSITION_SELECTOR = ".position"
-TEAM_NAME_SELECTOR = ".team-name"
-POINTS_SELECTOR = ".points"
-
-
-def _parse_float(text: str | None) -> float | None:
-    if text is None:
-        return None
-    text = text.strip().replace(",", ".")
+def _parse_iso(text: str | None) -> datetime | None:
     if not text:
         return None
     try:
-        return float(text)
+        return datetime.fromisoformat(text)
     except ValueError:
+        logger.warning("Impossibile interpretare la data/ora ISO: %r", text)
         return None
 
 
-def _parse_int(text: str | None) -> int | None:
-    if text is None:
-        return None
-    text = text.strip()
-    if not text:
-        return None
-    try:
-        return int(re.sub(r"[^\d-]", "", text) or "0")
-    except ValueError:
-        return None
+def parse_matchday_status(
+    league_id: str,
+    status_json: dict,
+    lineup_json: dict,
+) -> MatchdayStatus:
+    """Combina /league/status e /teamLineup/visualizza per ottenere la
+    giornata-lega corrente e la mappatura verso la giornata di Serie A.
+
+    status_json: corpo di GET /onboarding/v1/league/status
+    lineup_json: corpo di GET /gaming/v1/teamLineup/visualizza/{div}/{compId}
+    """
+    next_serie_a_mday = status_json.get("mday")
+    deadline = _parse_iso(status_json.get("mstr"))
+
+    dto = lineup_json.get("teamLineupDto", {})
+    next_round = dto.get("mday")
+    lineup_serie_a_mday = dto.get("cmday")
+
+    if next_round is None:
+        raise ValueError(
+            f"Impossibile determinare la giornata-lega corrente per {league_id}: "
+            "campo 'mday' mancante in teamLineupDto. Verificare lo schema "
+            "dell'endpoint teamLineup/visualizza."
+        )
+
+    if (
+        next_serie_a_mday is not None
+        and lineup_serie_a_mday is not None
+        and next_serie_a_mday != lineup_serie_a_mday
+    ):
+        logger.warning(
+            "Lega %s: la giornata di Serie A da /league/status (%s) non "
+            "corrisponde a quella da /teamLineup/visualizza (%s); uso "
+            "comunque il round da teamLineup/visualizza.",
+            league_id,
+            next_serie_a_mday,
+            lineup_serie_a_mday,
+        )
+
+    last_calculated_round = next_round - 1
+
+    return MatchdayStatus(
+        league_id=league_id,
+        matchday=last_calculated_round,
+        # Nota: assume che la giornata precedente a quella "prossima" sia
+        # gia' stata calcolata. Non e' ancora stato verificato un campo
+        # esplicito equivalente a "cal" (visto invece nell'endpoint di
+        # dettaglio partita) a livello di /league/status. Vedi TODO nel
+        # docstring del modulo.
+        calculated=last_calculated_round >= 1,
+        calculated_at=None,
+        next_deadline_at=deadline,
+        next_matchday=next_round,
+    )
 
 
-def _parse_datetime(text: str | None) -> datetime | None:
-    if not text:
-        return None
-    text = text.strip()
-    for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%d/%m/%Y %H:%M"):
-        try:
-            return datetime.strptime(text, fmt)
-        except ValueError:
-            continue
-    logger.warning("Impossibile interpretare la data/ora: %r", text)
+def parse_team_id(teams_json: dict, team_name: str) -> int | None:
+    """Trova l'ID squadra a partire dal nome, nella risposta di
+    GET /onboarding/v1/league/teams?page=1&division={division}.
+    """
+    for team in teams_json.get("data", []):
+        if str(team.get("n", "")).strip().casefold() == team_name.strip().casefold():
+            return team.get("id")
+    logger.warning(
+        "Squadra %r non trovata tra le squadre della lega. Verificare che "
+        "team_name in config/leagues.yaml corrisponda esattamente al nome "
+        "visualizzato sul sito.",
+        team_name,
+    )
     return None
 
 
-def parse_matchday_status(html: str, league_id: str) -> MatchdayStatus:
-    """Estrae lo stato dell'ultima giornata calcolata da una pagina lega.
+def parse_match_detail(match_json: dict, team_id: int, team_name: str) -> tuple[TeamStatus, MatchResult] | None:
+    """Estrae TeamStatus/MatchResult da GET
+    /gaming/v1/teamLineup/{competitionId}/{round}/{serieAMday}/{teamA}/{teamB}
 
-    Preferisce dati strutturati (attributi data-*) al testo visualizzato,
-    come richiesto dalla specifica. Se non trova nulla di strutturato,
-    tenta un fallback testuale best-effort e lo segnala nei log.
+    Ritorna None se la giornata non risulta ancora calcolata (campo "cal").
     """
-    soup = BeautifulSoup(html, "lxml")
+    if not match_json.get("cal", False):
+        return None
 
-    node = soup.select_one(MATCHDAY_STATUS_SELECTOR)
-    if node is not None and node.get(MATCHDAY_ATTR):
-        matchday = _parse_int(node.get(MATCHDAY_ATTR))
-        calculated = node.get(CALCULATED_FLAG_ATTR, "true").lower() not in (
-            "false",
-            "0",
-        )
-        calculated_at = _parse_datetime(node.get(CALCULATED_AT_ATTR))
-        if matchday is not None:
-            status = MatchdayStatus(
-                league_id=league_id,
-                matchday=matchday,
-                calculated=calculated,
-                calculated_at=calculated_at,
-            )
-            _attach_deadline(soup, status)
-            return status
+    home = match_json.get("home", {})
+    away = match_json.get("away", {})
 
-    logger.warning(
-        "Nessun dato strutturato trovato per lo stato giornata (lega=%s); "
-        "uso fallback testuale, meno affidabile. Verificare i selettori "
-        "in app/fantacalcio/parser.py con l'HTML reale.",
-        league_id,
-    )
-    text = soup.get_text(" ", strip=True)
-    match = MATCHDAY_TEXT_PATTERN.search(text)
-    if not match:
-        raise ValueError(
-            f"Impossibile determinare la giornata dalla pagina della lega {league_id}: "
-            "nessun dato strutturato ne' testo riconoscibile. Verificare i selettori."
-        )
-    matchday = int(match.group(1))
-    calculated = bool(CALCULATED_TEXT_PATTERN.search(text)) and not bool(
-        NOT_CALCULATED_TEXT_PATTERN.search(text)
-    )
-    status = MatchdayStatus(
-        league_id=league_id,
-        matchday=matchday,
-        calculated=calculated,
-        calculated_at=None,
-    )
-    _attach_deadline(soup, status)
-    return status
-
-
-def _attach_deadline(soup: BeautifulSoup, status: MatchdayStatus) -> None:
-    deadline_node = soup.select_one(DEADLINE_SELECTOR)
-    if deadline_node is not None:
-        status.next_deadline_at = _parse_datetime(deadline_node.get(DEADLINE_ATTR))
-        next_md = deadline_node.get(MATCHDAY_ATTR)
-        if next_md:
-            status.next_matchday = _parse_int(next_md)
-        elif status.next_deadline_at is not None:
-            status.next_matchday = status.matchday + 1
-
-
-def parse_results(html: str) -> list[MatchResult]:
-    """Estrae i risultati delle partite di una giornata."""
-    soup = BeautifulSoup(html, "lxml")
-    results: list[MatchResult] = []
-
-    for row in soup.select(MATCH_ROW_SELECTOR):
-        home_el = row.select_one(HOME_TEAM_SELECTOR)
-        away_el = row.select_one(AWAY_TEAM_SELECTOR)
-        if home_el is None or away_el is None:
-            continue
-        home_score_el = row.select_one(HOME_SCORE_SELECTOR)
-        away_score_el = row.select_one(AWAY_SCORE_SELECTOR)
-        results.append(
-            MatchResult(
-                home_team=home_el.get_text(strip=True),
-                away_team=away_el.get_text(strip=True),
-                home_score=_parse_float(
-                    home_score_el.get_text(strip=True) if home_score_el else None
-                ),
-                away_score=_parse_float(
-                    away_score_el.get_text(strip=True) if away_score_el else None
-                ),
-            )
-        )
-
-    if not results:
-        logger.warning(
-            "Nessun risultato estratto dalla pagina risultati: verificare "
-            "i selettori MATCH_ROW_SELECTOR/HOME_TEAM_SELECTOR/... "
-            "in app/fantacalcio/parser.py."
-        )
-    return results
-
-
-def parse_team_status(
-    html_standings: str, html_results: str | None, team_name: str
-) -> TeamStatus:
-    """Estrae posizione/punti in classifica ed eventuale risultato della
-    squadra configurata, incrociando classifica e risultati della giornata.
-    """
-    soup = BeautifulSoup(html_standings, "lxml")
-    status = TeamStatus(team_name=team_name)
-
-    for row in soup.select(STANDINGS_ROW_SELECTOR):
-        name_el = row.select_one(TEAM_NAME_SELECTOR)
-        if name_el is None:
-            continue
-        if name_el.get_text(strip=True).casefold() != team_name.casefold():
-            continue
-        position_el = row.select_one(POSITION_SELECTOR)
-        points_el = row.select_one(POINTS_SELECTOR)
-        status.league_position = _parse_int(
-            position_el.get_text(strip=True) if position_el else None
-        )
-        status.league_points = _parse_float(
-            points_el.get_text(strip=True) if points_el else None
-        )
-        break
+    if home.get("tid") == team_id:
+        mine, opponent = home, away
+    elif away.get("tid") == team_id:
+        mine, opponent = away, home
     else:
         logger.warning(
-            "Squadra %r non trovata in classifica: verificare "
-            "STANDINGS_ROW_SELECTOR/TEAM_NAME_SELECTOR o il nome squadra "
-            "configurato (FANTACALCIO_TEAM_NAME).",
-            team_name,
+            "L'ID squadra %s non compare ne' in home ne' in away nella "
+            "risposta del dettaglio partita.",
+            team_id,
         )
+        return None
 
-    if html_results:
-        for result in parse_results(html_results):
-            if result.home_team.casefold() == team_name.casefold():
-                status.score = result.home_score
-                status.opponent_name = result.away_team
-                status.opponent_score = result.away_score
-                break
-            if result.away_team.casefold() == team_name.casefold():
-                status.score = result.away_score
-                status.opponent_name = result.home_team
-                status.opponent_score = result.home_score
-                break
-
-    return status
+    team_status = TeamStatus(
+        team_name=team_name,
+        score=mine.get("tot"),
+        opponent_score=opponent.get("tot"),
+    )
+    result = MatchResult(
+        home_team=team_name if mine is home else "",
+        away_team=team_name if mine is away else "",
+        home_score=home.get("tot"),
+        away_score=away.get("tot"),
+    )
+    return team_status, result

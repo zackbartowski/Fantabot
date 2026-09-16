@@ -1,0 +1,18 @@
+{
+  "cal": true,
+  "mday": 1,
+  "cmday": 4,
+  "idcomp": 706778,
+  "sign": "2",
+  "res": "0-5",
+  "home": {
+    "tid": 16297695,
+    "points": 0,
+    "tot": 63
+  },
+  "away": {
+    "tid": 16130306,
+    "points": 3,
+    "tot": 87.5
+  }
+}

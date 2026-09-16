@@ -88,17 +88,25 @@ def _load_leagues(path: str) -> list[LeagueConfig]:
                 "nessun destinatario WhatsApp configurato."
             )
 
-        session_cookie = entry.get("session_cookie", "")
-        cookie_env_name = entry.get("session_cookie_env")
-        if cookie_env_name:
-            session_cookie = os.getenv(cookie_env_name, "")
-        if not session_cookie:
+        competition_id = entry.get("competition_id")
+        if not competition_id:
             raise ConfigError(
-                f"Cookie di sessione mancante per la lega {league_id!r}. "
-                f"Imposta la variabile d'ambiente {cookie_env_name!r} "
+                f"{prefix}.competition_id mancante per la lega {league_id!r}. "
+                "Visibile nell'URL quando apri la Classifica sul sito "
+                "(es. .../view/competition/706778/standings -> 706778)."
+            )
+
+        api_key = entry.get("api_key", "")
+        api_key_env_name = entry.get("api_key_env")
+        if api_key_env_name:
+            api_key = os.getenv(api_key_env_name, "")
+        if not api_key:
+            raise ConfigError(
+                f"api_key mancante per la lega {league_id!r}. "
+                f"Imposta la variabile d'ambiente {api_key_env_name!r} "
                 "(vedi README, sezione Autenticazione)."
-                if cookie_env_name
-                else f"{prefix}: specificare 'session_cookie' o 'session_cookie_env'."
+                if api_key_env_name
+                else f"{prefix}: specificare 'api_key' o 'api_key_env'."
             )
 
         leagues.append(
@@ -108,7 +116,9 @@ def _load_leagues(path: str) -> list[LeagueConfig]:
                 url=url,
                 season=str(entry.get("season", "")),
                 team_name=team_name,
-                session_cookie=session_cookie,
+                api_key=api_key,
+                competition_id=int(competition_id),
+                division=str(entry.get("division", "A")),
                 recipients=[str(r).strip() for r in recipients],
                 poll_interval_seconds=int(entry.get("poll_interval_seconds", 300)),
                 reminder_offsets_hours=list(entry.get("reminder_offsets_hours", [24, 1])),

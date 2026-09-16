@@ -3,62 +3,63 @@ from __future__ import annotations
 from datetime import datetime
 
 from app.fantacalcio import parser
-from conftest import read_fixture
+from conftest import read_json_fixture
 
 
 def test_parse_matchday_status_calculated():
-    html = read_fixture("classifica_calculated.html")
-    status = parser.parse_matchday_status(html, league_id="mantra-cormolittoriano")
+    status_json = read_json_fixture("league_status.json")
+    lineup_json = read_json_fixture("team_lineup_visualizza.json")
 
-    assert status.matchday == 4
+    status = parser.parse_matchday_status("mantra-cormolittoriano", status_json, lineup_json)
+
+    # teamLineupDto.mday=2 (giornata-lega prossima) -> ultima calcolata = 1
+    assert status.matchday == 1
     assert status.calculated is True
-    assert status.calculated_at == datetime(2024, 10, 1, 20, 15, 0)
-    assert status.next_matchday == 5
-    assert status.next_deadline_at == datetime(2024, 10, 6, 18, 30, 0)
+    assert status.next_matchday == 2
+    assert status.next_deadline_at == datetime(2026, 9, 18, 18, 45, 0)
 
 
-def test_parse_matchday_status_not_calculated():
-    html = read_fixture("classifica_not_calculated.html")
-    status = parser.parse_matchday_status(html, league_id="mantra-cormolittoriano")
+def test_parse_matchday_status_no_previous_round():
+    status_json = {"mday": 1, "mstr": "2026-08-20T18:30:00"}
+    lineup_json = {"teamLineupDto": {"mday": 1, "cmday": 1}}
 
-    assert status.matchday == 5
+    status = parser.parse_matchday_status("lega-x", status_json, lineup_json)
+
+    assert status.matchday == 0
     assert status.calculated is False
 
 
-def test_parse_results():
-    html = read_fixture("risultati_giornata4.html")
-    results = parser.parse_results(html)
-
-    assert len(results) == 2
-    assert results[0].home_team == "I Fenomeni"
-    assert results[0].away_team == "Real Cormolò"
-    assert results[0].home_score == 68.5
-    assert results[0].away_score == 61.0
+def test_parse_team_id_found():
+    teams_json = read_json_fixture("teams.json")
+    assert parser.parse_team_id(teams_json, "Hello Spence") == 16130306
 
 
-def test_parse_team_status_found_in_standings_and_results():
-    standings_html = read_fixture("classifica_calculated.html")
-    results_html = read_fixture("risultati_giornata4.html")
-
-    status = parser.parse_team_status(standings_html, results_html, "I Fenomeni")
-
-    assert status.league_position == 1
-    assert status.league_points == 24
-    assert status.score == 68.5
-    assert status.opponent_name == "Real Cormolò"
-    assert status.opponent_score == 61.0
+def test_parse_team_id_case_insensitive():
+    teams_json = read_json_fixture("teams.json")
+    assert parser.parse_team_id(teams_json, "hello spence") == 16130306
 
 
-def test_parse_team_status_not_in_standings():
-    standings_html = read_fixture("classifica_calculated.html")
-    status = parser.parse_team_status(standings_html, None, "Squadra Inesistente")
-
-    assert status.league_position is None
-    assert status.league_points is None
+def test_parse_team_id_not_found():
+    teams_json = read_json_fixture("teams.json")
+    assert parser.parse_team_id(teams_json, "Squadra Inesistente") is None
 
 
-def test_parse_matchday_status_raises_when_nothing_found():
-    import pytest
+def test_parse_match_detail_calculated():
+    match_json = read_json_fixture("match_detail_calculated.json")
 
-    with pytest.raises(ValueError):
-        parser.parse_matchday_status("<html><body>pagina vuota</body></html>", "lega-x")
+    result = parser.parse_match_detail(match_json, team_id=16130306, team_name="Hello Spence")
+
+    assert result is not None
+    team_status, match_result = result
+    assert team_status.score == 87.5
+    assert team_status.opponent_score == 63
+    assert match_result.away_score == 87.5
+    assert match_result.home_score == 63
+
+
+def test_parse_match_detail_not_calculated_returns_none():
+    match_json = read_json_fixture("match_detail_not_calculated.json")
+
+    result = parser.parse_match_detail(match_json, team_id=16130306, team_name="Hello Spence")
+
+    assert result is None

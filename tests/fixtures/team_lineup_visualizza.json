@@ -1,0 +1,14 @@
+{
+  "teamLineupDto": {
+    "visb": true,
+    "allComp": false,
+    "idcomp": 706778,
+    "tid": 16130306,
+    "mday": 2,
+    "cmday": 5,
+    "act": 0,
+    "useId": 1584282,
+    "starts": [5841, 6482, 6534],
+    "bench": [6229, 6052]
+  }
+}
