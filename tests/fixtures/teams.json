@@ -1,0 +1,31 @@
+{
+  "nextPage": false,
+  "prevPage": false,
+  "page": 1,
+  "item": 2,
+  "pages": 1,
+  "data": [
+    {
+      "d": "A",
+      "c": true,
+      "id": 16130306,
+      "idu": 1584282,
+      "n": "Hello Spence",
+      "nu": "StefanoZack"
+    },
+    {
+      "d": "A",
+      "c": true,
+      "id": 16297695,
+      "idu": 11703353,
+      "n": "SC Aramanzia",
+      "nu": "Emanuele"
+    }
+  ],
+  "divisions": [
+    {
+      "division": "A",
+      "count": 2
+    }
+  ]
+}

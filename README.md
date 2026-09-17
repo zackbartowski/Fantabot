@@ -5,86 +5,118 @@ invia una notifica WhatsApp quando viene calcolata una nuova giornata,
 oltre a promemoria 24h e 1h prima della chiusura delle formazioni.
 Configurabile per più leghe contemporaneamente.
 
-> ⚠️ **Stato del progetto: da validare con dati reali.** Vedi la sezione
-> [Leghe Fantacalcio integration](#leghe-fantacalcio-integration) qui
-> sotto: l'ambiente di sviluppo usato per costruire questo bot non aveva
-> accesso di rete a leghe.fantacalcio.it, quindi il parser HTML è stato
-> scritto sulla base di pattern plausibili ma **non verificati** contro
-> l'HTML reale della lega. Prima di fidarsi delle notifiche in
-> produzione, segui i passaggi in [Validazione con la lega reale](#validazione-con-la-lega-reale).
+> ⚠️ **Stato del progetto: promemoria formazione verificati e funzionanti;
+> notifica "giornata calcolata" temporaneamente disabilitata.** Vedi
+> [Leghe Fantacalcio integration](#leghe-fantacalcio-integration): i
+> promemoria 24h/1h prima della deadline formazioni sono verificati contro
+> chiamate reali all'API e funzionano. La rilevazione "giornata calcolata"
+> è invece **disattivata di proposito** (`calculated` sempre `False`) finché
+> non è integrato l'endpoint calendario: senza di esso non si può
+> distinguere in modo affidabile "la giornata è stata calcolata" da "è solo
+> aperto l'inserimento formazioni per quella successiva" (il calcolo è
+> un'azione manuale dell'admin, scollegata dall'apertura formazioni — bug
+> trovato in review, vedi [Da completare](#da-completare)). Inviare la
+> notifica in base alla sola euristica precedente rischiava falsi positivi
+> e notifiche mai inviate per giornate calcolate davvero.
 
 ---
 
 ## Leghe Fantacalcio integration
 
-**Metodo utilizzato:** HTML scraping autenticato (nessuna API pubblica o
-ufficiale nota per Leghe Fantacalcio). Il client (`app/fantacalcio/client.py`)
-effettua richieste HTTP GET alle pagine della lega e ne effettua il parsing
-(`app/fantacalcio/parser.py`) con BeautifulSoup, privilegiando attributi
-`data-*` strutturati quando presenti e ricorrendo al testo visualizzato
-solo come fallback.
+**Metodo utilizzato:** l'app di Leghe Fantacalcio è una Single Page
+Application Angular che si appoggia a una **vera API JSON REST**,
+`https://apileague.fantacalcio.it` (non documentata pubblicamente, ma
+usata direttamente dal sito stesso — nessuno scraping HTML). Scoperta
+osservando due export HAR delle richieste XHR reali del browser
+dell'utente durante la navigazione della sua lega.
 
-**Endpoint/dati utilizzati:** pagine `classifica` e `risultati` sotto
-l'URL della lega (es. `https://leghe.fantacalcio.it/<slug-lega>/classifica`).
-Questi percorsi sono un'**ipotesi**, non confermata: non è stato possibile
-osservare le richieste XHR/fetch reali del sito né la struttura HTML
-effettiva perché in questo ambiente di sviluppo l'accesso di rete a
-`leghe.fantacalcio.it` è bloccato dal proxy, e in ogni caso la lega
-richiede un login a cui questo ambiente non ha credenziali.
+**Endpoint verificati (risposta 200 con corpo JSON osservato):**
+| Endpoint | Uso |
+|---|---|
+| `GET /onboarding/v1/league/status` | Numero di giornata di Serie A in arrivo (`mday`) e orario di inizio/deadline (`mstr`) |
+| `GET /gaming/v1/teamLineup/visualizza/{division}/{competitionId}` | Mappa giornata-lega ↔ giornata-Serie A (`mday`/`cmday`) |
+| `GET /onboarding/v1/league/teams?page=1&division={division}` | Elenco squadre della lega, per risalire all'ID squadra dal nome |
+| `GET /gaming/v1/teamLineup/{competitionId}/{round}/{serieAMday}/{teamA}/{teamB}` | Dettaglio partita: punteggi (`tot`) e flag esplicito "giornata calcolata" (`cal`) |
+| `GET /market/v1/time` | Ora server, per non dipendere dall'orologio del bot |
+| `POST /gaming/v1/league/timing` | Millisecondi mancanti alla prossima deadline (ridondante rispetto a `mstr`, usato solo per cross-check) |
 
-**Autenticazione:** Leghe Fantacalcio richiede un login. Il bot **non
-automatizza il login** (nessun invio di username/password, nessun bypass
-di CAPTCHA): riusa invece un cookie di sessione che l'utente ottiene
-autenticandosi normalmente, una volta, nel proprio browser. Questo è il
-metodo meno fragile e meno invasivo compatibile con l'assenza di
-un'API ufficiale. Vedi [Autenticazione](#autenticazione).
+**Autenticazione:** ogni richiesta include un header `app_key` (stringa
+tipo token, es. `ICiELOObd5DF5uJEATi77CRvHiiRuMU0`) che l'app del sito
+invia su tutte le chiamate. Non è stato osservato alcun cookie nelle
+richieste catturate (gli export HAR di Chrome/Opera possono comunque
+filtrare i cookie per privacy: se in futuro l'`app_key` da solo smettesse
+di bastare, andrebbe verificato se serve anche un cookie di sessione
+condiviso su `.fantacalcio.it`). Il bot **non automatizza il login**:
+l'utente estrae l'`app_key` una volta dal proprio browser già loggato
+(vedi [Autenticazione](#autenticazione)).
 
 **Limitazioni:**
-- I selettori CSS in `app/fantacalcio/parser.py` sono marcati esplicitamente
-  come non verificati e vanno corretti con l'HTML reale (vedi sotto).
-- Il cookie di sessione scade periodicamente; quando accade, il bot logga
-  un errore di autenticazione (senza esporre il valore del cookie) e
-  continua a ritentare ai cicli successivi finché non viene aggiornato.
+- Non è ancora stato possibile osservare una risposta 200 (non da cache
+  applicativa, vedi sotto) per `GET /onboarding/v1/league/competition/calendar/{competitionId}`
+  (calendario/accoppiamenti) e per `GET /onboarding/v1/league/competition/teams?...&competitionId=...`
+  (classifica). Senza il calendario non si conosce l'ID dell'avversario
+  in una data giornata, necessario per chiamare l'endpoint di dettaglio
+  partita (che espone il flag esplicito `cal` = "giornata calcolata");
+  senza la classifica non si ha posizione/punti. Fino a quel momento
+  `parse_matchday_status` ritorna sempre `calculated=False`: **il bot non
+  invia ancora la notifica "giornata calcolata"** (i promemoria formazione
+  restano attivi, non dipendono da questo). Vedi [Da completare](#da-completare).
+- L'app usa un proprio meccanismo di cache/ETag (header `if-none-match`
+  generati lato client) indipendente dalla cache del browser: anche con
+  "Disable cache" attivo in DevTools, richieste già viste nella sessione
+  tornano `304` senza corpo. Bisogna forzare una sessione pulita (finestra
+  di navigazione in incognito) per catturarne il corpo reale.
 - Rispetta i termini d'uso del sito: intervallo di polling non aggressivo
-  (default 5 minuti), User-Agent identificabile, nessun bypass di misure
-  di sicurezza.
+  (default 5 minuti), nessun bypass di misure di sicurezza, nessuna
+  automazione del login.
 - Il client di Leghe Fantacalcio è isolato dietro l'interfaccia in
-  `app/fantacalcio/models.py`: se in futuro emergesse un'API ufficiale o
-  endpoint diversi, basta riscrivere `client.py`/`parser.py` senza
-  toccare il resto dell'applicazione.
+  `app/fantacalcio/models.py`: se in futuro cambiassero gli endpoint,
+  basta riscrivere `client.py`/`parser.py` senza toccare il resto
+  dell'applicazione.
 
-### Validazione con la lega reale
+### Da completare
 
-1. Autenticati nella tua lega da browser e ottieni il cookie di sessione
-   (vedi [Autenticazione](#autenticazione)).
-2. Configura `.env` e `config/leagues.yaml` come descritto sotto.
-3. Da una macchina **con accesso di rete reale** al sito (il tuo PC, un
-   VPS, un Raspberry Pi — non l'ambiente usato per generare questo
-   codice), esegui:
-   ```bash
-   python scripts/dump_pages.py mantra-cormolittoriano
-   ```
-   Questo salva l'HTML reale delle pagine `classifica`/`risultati` in
-   `tests/fixtures/dump/`.
-4. Confronta l'HTML ottenuto con i selettori in cima a
-   `app/fantacalcio/parser.py` (sezione "SELETTORI NON VERIFICATI") e
-   correggili di conseguenza (nomi di classi CSS, attributi `data-*`,
-   percorsi delle pagine in `client.py`).
-5. Rilancia `pytest tests/test_parser.py` (idealmente aggiungendo le
-   fixture reali) finché il parsing non produce i dati corretti.
-6. Testa un ciclo completo con `DRY_RUN=true` (vedi sotto) per vedere il
-   messaggio che verrebbe inviato, prima di disattivare il dry-run.
+Serve la risposta reale (200, non 304) di questi due endpoint per:
+1. **riattivare la notifica "giornata calcolata"** in modo affidabile
+   (priorità alta — vedi limitazione sopra): il flag `cal` dell'endpoint
+   di dettaglio partita conferma il calcolo reale, ma richiede l'ID
+   dell'avversario, che si ottiene dal calendario;
+2. popolare punteggio, avversario e classifica nel testo del messaggio.
+
+Endpoint mancanti:
+- `GET https://apileague.fantacalcio.it/onboarding/v1/league/competition/calendar/{competitionId}`
+- `GET https://apileague.fantacalcio.it/onboarding/v1/league/competition/teams?page=1&pageSize=50&competitionId={competitionId}`
+
+Per catturarle: apri una finestra di navigazione **in incognito/privata**
+(cache dell'app pulita), fai login alla lega, apri le pagine
+Classifica/Calendario, poi F12 → Network → filtro Fetch/XHR → tasto
+destro sulle due richieste sopra → "Copy → Copy response" (o "Save all
+as HAR" se preferisci). Una volta ottenuti:
+1. completare `parse_calendar`/`parse_standings` in `app/fantacalcio/parser.py`
+   e i metodi `get_results`/`get_team_status` in `app/fantacalcio/client.py`
+   (attualmente stub con TODO espliciti);
+2. in `parse_matchday_status`, sostituire `calculated=False` con una vera
+   verifica del flag `cal` per `last_calculated_round` (richiede
+   l'ID squadra dell'utente + l'ID avversario di quella giornata dal
+   calendario, poi chiamare l'endpoint di dettaglio partita).
+
+In alternativa, da una macchina con accesso di rete reale:
+```bash
+python scripts/dump_pages.py mantra-cormolittoriano
+```
+salva in `tests/fixtures/dump/` tutte le risposte JSON note, incluse
+(se non cachate) calendario e classifica.
 
 ---
 
 ## Architettura
 
 ```text
-Leghe Fantacalcio (HTML)
+apileague.fantacalcio.it (JSON)
        ↓
-FantacalcioClient (HTTP + cookie)       app/fantacalcio/client.py
+FantacalcioClient (HTTP + app_key)      app/fantacalcio/client.py
        ↓
-parser.py (HTML -> modelli)             app/fantacalcio/parser.py
+parser.py (JSON -> modelli)             app/fantacalcio/parser.py
        ↓
 modelli normalizzati                    app/fantacalcio/models.py
        ↓
@@ -152,20 +184,20 @@ Meta (non WhatsApp Web/Selenium).
 
 1. Apri la tua lega nel browser e fai login normalmente
    (es. `https://leghe.fantacalcio.it/mantra-cormolittoriano/`).
-2. Apri gli strumenti sviluppatore del browser (F12) →
-   scheda **Application/Storage → Cookie** (Chrome/Edge) o
-   **Storage → Cookie** (Firefox), seleziona il dominio
-   `leghe.fantacalcio.it`.
-3. Copia il valore del cookie di sessione (tipicamente `PHPSESSID` o
-   simile) — puoi copiare anche l'intera stringa `Cookie` dalla scheda
-   Network di una richiesta se preferisci (formato
-   `NOME1=valore1; NOME2=valore2`, supportato dal bot).
+2. Apri gli strumenti sviluppatore (F12) → scheda **Network** → filtro
+   **Fetch/XHR** → clicca su una qualsiasi richiesta verso
+   `apileague.fantacalcio.it` (es. `league/status`).
+3. Nella scheda **Headers** di quella richiesta, cerca l'header di
+   richiesta `app_key` e copiane il valore.
 4. Incolla il valore nella variabile d'ambiente indicata da
-   `session_cookie_env` per quella lega in `config/leagues.yaml`
-   (es. `FANTACALCIO_SESSION_COOKIE_MANTRA_CORMOLITTORIANO` in `.env`).
-5. Il cookie scade periodicamente (logout, cambio password, timeout di
-   sessione): quando le richieste iniziano a fallire con errori di
-   autenticazione nei log, ripeti questi passaggi.
+   `api_key_env` per quella lega in `config/leagues.yaml`
+   (es. `FANTACALCIO_API_KEY_MANTRA_CORMOLITTORIANO` in `.env`).
+5. Prendi nota anche del `competition_id`: apri la Classifica sul sito e
+   guarda l'URL, es. `.../view/competition/706778/standings` →
+   `competition_id: 706778` da mettere in `config/leagues.yaml`.
+6. Se l'`app_key` scade o smette di funzionare (le chiamate iniziano a
+   fallire con errore di autenticazione nei log, senza che il valore
+   venga mai loggato), ripeti questi passaggi.
 
 ### 3. Configurare le leghe
 
@@ -177,9 +209,11 @@ leagues:
   - id: mantra-cormolittoriano
     name: "Mantra Cormolittoriano"
     url: "https://leghe.fantacalcio.it/mantra-cormolittoriano/"
-    season: "2024-25"
+    season: "2025-26"
     team_name: "Nome Squadra"          # esattamente come in classifica
-    session_cookie_env: FANTACALCIO_SESSION_COOKIE_MANTRA_CORMOLITTORIANO
+    competition_id: 706778             # dall'URL della Classifica sul sito
+    division: "A"
+    api_key_env: FANTACALCIO_API_KEY_MANTRA_CORMOLITTORIANO
     recipients:
       - "393331234567"
       - "393401234567"
@@ -187,10 +221,10 @@ leagues:
     reminder_offsets_hours: [24, 1]
 ```
 
-Per aggiungere una seconda lega, aggiungi un'altra voce con `id`, `url`,
-`session_cookie_env` (puntando a un'altra variabile d'ambiente) e
-`recipients` propri: ogni lega può avere destinatari, intervallo di
-polling e squadra da seguire completamente diversi.
+Per aggiungere una seconda lega, aggiungi un'altra voce con `id`,
+`competition_id`, `api_key_env` (puntando a un'altra variabile
+d'ambiente) e `recipients` propri: ogni lega può avere destinatari,
+intervallo di polling e squadra da seguire completamente diversi.
 
 ### 4. Avvio
 
@@ -306,13 +340,12 @@ errori 5xx, nessun retry su errori non recuperabili come 401, dry-run).
 ## Sicurezza
 
 - `.env` e `config/leagues.yaml` sono in `.gitignore`: non committare mai
-  cookie, token o numeri di telefono reali.
-- Nessun log include il valore del cookie di sessione o dell'access
-  token WhatsApp.
+  `app_key`, access token WhatsApp o numeri di telefono reali.
+- Nessun log include il valore dell'`app_key` o dell'access token
+  WhatsApp.
 - Tutte le richieste HTTP hanno timeout configurato.
 - La configurazione viene validata all'avvio (fail-fast con messaggio
   chiaro se manca qualcosa).
-- User-Agent identificabile nelle richieste verso Leghe Fantacalcio.
 
 ---
 

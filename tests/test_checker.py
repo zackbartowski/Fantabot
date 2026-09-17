@@ -19,7 +19,8 @@ def league() -> LeagueConfig:
         url="https://leghe.fantacalcio.it/mantra-cormolittoriano/",
         season="2024-25",
         team_name="I Fenomeni",
-        session_cookie="PHPSESSID=fake",
+        api_key="fake-api-key",
+        competition_id=706778,
         recipients=["393331234567"],
     )
 

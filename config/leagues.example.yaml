@@ -1,20 +1,26 @@
 # Copia questo file in config/leagues.yaml e personalizzalo.
 #
-# Ogni lega e' configurabile indipendentemente: URL, squadra da seguire,
-# destinatari WhatsApp, intervallo di polling e offset dei promemoria
-# formazione. Aggiungere una nuova lega significa aggiungere una nuova
-# voce a questo elenco.
+# Ogni lega e' configurabile indipendentemente: competizione, squadra da
+# seguire, destinatari WhatsApp, intervallo di polling e offset dei
+# promemoria formazione. Aggiungere una nuova lega significa aggiungere
+# una nuova voce a questo elenco.
 
 leagues:
   - id: mantra-cormolittoriano
     name: "Mantra Cormolittoriano"
     url: "https://leghe.fantacalcio.it/mantra-cormolittoriano/"
-    season: "2024-25"
+    season: "2025-26"
     # Nome ESATTO della tua squadra cosi' come appare in classifica.
     team_name: "Nome Squadra"
+    # ID della competizione, visibile nell'URL quando apri la Classifica
+    # sul sito: https://leghe.fantacalcio.it/<slug>/view/competition/<ID>/standings
+    competition_id: 706778
+    # "A" per la divisione principale (Serie A classica/Mantra); cambia
+    # solo se la tua lega ha piu' divisioni.
+    division: "A"
     # Nome della variabile d'ambiente (definita in .env) che contiene il
-    # cookie di sessione per questa lega. Vedi README > Autenticazione.
-    session_cookie_env: FANTACALCIO_SESSION_COOKIE_MANTRA_CORMOLITTORIANO
+    # valore dell'header app_key. Vedi README > Autenticazione.
+    api_key_env: FANTACALCIO_API_KEY_MANTRA_CORMOLITTORIANO
     recipients:
       - "393331234567"
       - "393401234567"
@@ -25,9 +31,11 @@ leagues:
   # - id: altra-lega
   #   name: "Altra Lega"
   #   url: "https://leghe.fantacalcio.it/altra-lega/"
-  #   season: "2024-25"
+  #   season: "2025-26"
   #   team_name: "Altra Squadra"
-  #   session_cookie_env: FANTACALCIO_SESSION_COOKIE_ALTRA_LEGA
+  #   competition_id: 123456
+  #   division: "A"
+  #   api_key_env: FANTACALCIO_API_KEY_ALTRA_LEGA
   #   recipients:
   #     - "393331234567"
   #   poll_interval_seconds: 600
