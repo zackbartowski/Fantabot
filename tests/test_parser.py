@@ -6,17 +6,31 @@ from app.fantacalcio import parser
 from conftest import read_json_fixture
 
 
-def test_parse_matchday_status_calculated():
+def test_parse_matchday_status_computes_round_and_deadline():
     status_json = read_json_fixture("league_status.json")
     lineup_json = read_json_fixture("team_lineup_visualizza.json")
 
     status = parser.parse_matchday_status("mantra-cormolittoriano", status_json, lineup_json)
 
-    # teamLineupDto.mday=2 (giornata-lega prossima) -> ultima calcolata = 1
+    # teamLineupDto.mday=2 (giornata-lega prossima) -> ultima giornata-lega = 1
     assert status.matchday == 1
-    assert status.calculated is True
     assert status.next_matchday == 2
     assert status.next_deadline_at == datetime(2026, 9, 18, 18, 45, 0)
+
+
+def test_parse_matchday_status_calculated_always_false_pending_calendar_check():
+    # Il calcolo giornata e' un'azione manuale dell'admin, scollegata
+    # dall'apertura dell'inserimento formazioni per il turno successivo:
+    # senza il flag esplicito "cal" (richiede l'endpoint calendario, non
+    # ancora integrato) non possiamo confermare che la giornata precedente
+    # sia stata davvero calcolata, quindi calculated e' sempre False per
+    # evitare notifiche premature/false positive. Vedi PR #1 review.
+    status_json = read_json_fixture("league_status.json")
+    lineup_json = read_json_fixture("team_lineup_visualizza.json")
+
+    status = parser.parse_matchday_status("mantra-cormolittoriano", status_json, lineup_json)
+
+    assert status.calculated is False
 
 
 def test_parse_matchday_status_no_previous_round():

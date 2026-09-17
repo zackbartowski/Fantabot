@@ -5,14 +5,19 @@ invia una notifica WhatsApp quando viene calcolata una nuova giornata,
 oltre a promemoria 24h e 1h prima della chiusura delle formazioni.
 Configurabile per più leghe contemporaneamente.
 
-> ⚠️ **Stato del progetto: nucleo verificato, dettagli risultati/classifica
-> in completamento.** Vedi [Leghe Fantacalcio integration](#leghe-fantacalcio-integration):
-> la rilevazione "giornata calcolata" e i promemoria formazione 24h/1h
-> sono verificati contro chiamate reali all'API e funzionano. Il
-> punteggio/l'avversario nel messaggio di notifica non sono ancora
-> popolati (mancano due endpoint da verificare, vedi
-> [Da completare](#da-completare)); nel frattempo il bot invia comunque
-> la notifica "giornata calcolata" con i dati disponibili.
+> ⚠️ **Stato del progetto: promemoria formazione verificati e funzionanti;
+> notifica "giornata calcolata" temporaneamente disabilitata.** Vedi
+> [Leghe Fantacalcio integration](#leghe-fantacalcio-integration): i
+> promemoria 24h/1h prima della deadline formazioni sono verificati contro
+> chiamate reali all'API e funzionano. La rilevazione "giornata calcolata"
+> è invece **disattivata di proposito** (`calculated` sempre `False`) finché
+> non è integrato l'endpoint calendario: senza di esso non si può
+> distinguere in modo affidabile "la giornata è stata calcolata" da "è solo
+> aperto l'inserimento formazioni per quella successiva" (il calcolo è
+> un'azione manuale dell'admin, scollegata dall'apertura formazioni — bug
+> trovato in review, vedi [Da completare](#da-completare)). Inviare la
+> notifica in base alla sola euristica precedente rischiava falsi positivi
+> e notifiche mai inviate per giornate calcolate davvero.
 
 ---
 
@@ -51,11 +56,11 @@ l'utente estrae l'`app_key` una volta dal proprio browser già loggato
   (calendario/accoppiamenti) e per `GET /onboarding/v1/league/competition/teams?...&competitionId=...`
   (classifica). Senza il calendario non si conosce l'ID dell'avversario
   in una data giornata, necessario per chiamare l'endpoint di dettaglio
-  partita; senza la classifica non si ha posizione/punti. Finché non
-  verificati, il messaggio di notifica "giornata calcolata" viene
-  comunque inviato ma senza punteggio/avversario/posizione in classifica
-  (la spec richiede di includere solo i dati "effettivamente
-  recuperabili"). Vedi [Da completare](#da-completare).
+  partita (che espone il flag esplicito `cal` = "giornata calcolata");
+  senza la classifica non si ha posizione/punti. Fino a quel momento
+  `parse_matchday_status` ritorna sempre `calculated=False`: **il bot non
+  invia ancora la notifica "giornata calcolata"** (i promemoria formazione
+  restano attivi, non dipendono da questo). Vedi [Da completare](#da-completare).
 - L'app usa un proprio meccanismo di cache/ETag (header `if-none-match`
   generati lato client) indipendente dalla cache del browser: anche con
   "Disable cache" attivo in DevTools, richieste già viste nella sessione
@@ -71,8 +76,14 @@ l'utente estrae l'`app_key` una volta dal proprio browser già loggato
 
 ### Da completare
 
-Per popolare punteggio, avversario e classifica nel messaggio di
-notifica servono le risposte reali (200, non 304) di:
+Serve la risposta reale (200, non 304) di questi due endpoint per:
+1. **riattivare la notifica "giornata calcolata"** in modo affidabile
+   (priorità alta — vedi limitazione sopra): il flag `cal` dell'endpoint
+   di dettaglio partita conferma il calcolo reale, ma richiede l'ID
+   dell'avversario, che si ottiene dal calendario;
+2. popolare punteggio, avversario e classifica nel testo del messaggio.
+
+Endpoint mancanti:
 - `GET https://apileague.fantacalcio.it/onboarding/v1/league/competition/calendar/{competitionId}`
 - `GET https://apileague.fantacalcio.it/onboarding/v1/league/competition/teams?page=1&pageSize=50&competitionId={competitionId}`
 
@@ -80,10 +91,14 @@ Per catturarle: apri una finestra di navigazione **in incognito/privata**
 (cache dell'app pulita), fai login alla lega, apri le pagine
 Classifica/Calendario, poi F12 → Network → filtro Fetch/XHR → tasto
 destro sulle due richieste sopra → "Copy → Copy response" (o "Save all
-as HAR" se preferisci). Una volta ottenuti, completare
-`parse_calendar`/`parse_standings` in `app/fantacalcio/parser.py` e i
-metodi `get_results`/`get_team_status` in `app/fantacalcio/client.py`
-(attualmente stub con TODO espliciti).
+as HAR" se preferisci). Una volta ottenuti:
+1. completare `parse_calendar`/`parse_standings` in `app/fantacalcio/parser.py`
+   e i metodi `get_results`/`get_team_status` in `app/fantacalcio/client.py`
+   (attualmente stub con TODO espliciti);
+2. in `parse_matchday_status`, sostituire `calculated=False` con una vera
+   verifica del flag `cal` per `last_calculated_round` (richiede
+   l'ID squadra dell'utente + l'ID avversario di quella giornata dal
+   calendario, poi chiamare l'endpoint di dettaglio partita).
 
 In alternativa, da una macchina con accesso di rete reale:
 ```bash

@@ -50,8 +50,21 @@ vedi README) per:
 Finche' questi due endpoint non sono verificati, `get_results` e
 `get_team_status` restituiscono solo i dati che si possono ottenere senza
 di essi (per `get_team_status`: nessuno, se non si conosce l'avversario).
-Il resto del bot (rilevazione giornata calcolata + promemoria deadline
-formazione, l'obiettivo primario della v1) funziona gia' con dati reali.
+
+IMPORTANTE - rilevazione "giornata calcolata" TEMPORANEAMENTE DISABILITATA:
+il calcolo di una giornata su Leghe Fantacalcio e' un'azione MANUALE
+dell'admin di lega, scollegata dal momento in cui si apre l'inserimento
+formazioni per il turno successivo (segnalato in review, vedi PR #1). Non
+si puo' quindi dedurre in modo affidabile "la giornata N-1 e' stata
+calcolata" dal solo fatto che l'inserimento formazioni per la giornata N
+sia aperto (teamLineupDto.mday == N): l'admin potrebbe non aver ancora
+calcolato N-1. Finche' non e' disponibile il flag esplicito `cal`
+dell'endpoint di dettaglio partita (che richiede il calendario per sapere
+l'ID avversario, vedi sopra), `parse_matchday_status` ritorna sempre
+`calculated=False` per evitare falsi positivi (notifica inviata PRIMA del
+calcolo reale, poi mai piu' inviata perche' gia' marcata "notificata").
+I promemoria deadline formazione (`next_deadline_at`/`next_matchday`) non
+sono affetti da questo problema e restano pienamente funzionanti.
 ============================================================================
 """
 from __future__ import annotations
@@ -118,12 +131,12 @@ def parse_matchday_status(
     return MatchdayStatus(
         league_id=league_id,
         matchday=last_calculated_round,
-        # Nota: assume che la giornata precedente a quella "prossima" sia
-        # gia' stata calcolata. Non e' ancora stato verificato un campo
-        # esplicito equivalente a "cal" (visto invece nell'endpoint di
-        # dettaglio partita) a livello di /league/status. Vedi TODO nel
-        # docstring del modulo.
-        calculated=last_calculated_round >= 1,
+        # calculated e' sempre False per ora: vedi "IMPORTANTE" nel
+        # docstring del modulo. Il campo esplicito "cal" dell'endpoint di
+        # dettaglio partita richiede l'ID avversario (endpoint calendario,
+        # non ancora integrato), quindi non possiamo confermare in modo
+        # affidabile che last_calculated_round sia stata davvero calcolata.
+        calculated=False,
         calculated_at=None,
         next_deadline_at=deadline,
         next_matchday=next_round,
